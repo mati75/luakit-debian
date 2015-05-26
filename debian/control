@@ -1,7 +1,7 @@
 Source: luakit
 Section: web
 Priority: optional
-Maintainer: Clint Adams <clint@debian.org>
+Maintainer: Debian QA Group <packages@qa.debian.org>
 Standards-Version: 3.9.6
 Build-Depends: liblua5.1-0-dev, libgtk2.0-dev, libwebkitgtk-dev, help2man, lua5.1, libsqlite3-dev, libunique-dev
 Homepage: http://luakit.org/
