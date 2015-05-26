@@ -71,8 +71,8 @@ binary-arch:	checkroot build install
 	$(INSTALL_SCRIPT) debian/postinst debian/$(package)/DEBIAN/postinst
 	$(INSTALL_SCRIPT) debian/prerm debian/$(package)/DEBIAN/prerm
 
-	gzip -9f `find debian/$(package)/usr/share/doc -type f ! -name "copyright"`
-	gzip -9f debian/$(package)/usr/share/man/man1/luakit.1
+	gzip -9nf `find debian/$(package)/usr/share/doc -type f ! -name "copyright"`
+	gzip -9nf debian/$(package)/usr/share/man/man1/luakit.1
 	dpkg-shlibdeps -Tdebian/substvars debian/$(package)/usr/bin/luakit
 	dpkg-gencontrol -ldebian/changelog -isp -p$(package) -Tdebian/substvars -Pdebian/luakit
 	cd debian/$(package) && find * -type f ! -regex '^DEBIAN/.*' ! -path "etc/xdg/$(package)/*.lua" -print0 | xargs -r0 md5sum > DEBIAN/md5sums
