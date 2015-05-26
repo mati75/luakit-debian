@@ -1,3 +1,11 @@
+luakit (2012.09.13-r1-4) unstable; urgency=medium
+
+  * Patch from Chris Lamb to make the build reproducible.
+    closes: #777491.
+  * Orphan the package.
+
+ -- Clint Adams <clint@debian.org>  Mon, 25 May 2015 21:45:51 -0400
+
 luakit (2012.09.13-r1-3) unstable; urgency=low
 
   [ Enrico Tassi ]
