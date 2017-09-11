@@ -1,30 +1,28 @@
--------------------------------------------------------
--- Userscript support for luakit                     --
--- © 2011 Constantin Schomburg <me@xconstruct.net>   --
--- © 2010 Fabian Streitel <karottenreibe@gmail.com>  --
--- © 2010 Mason Larobina  <mason.larobina@gmail.com> --
--------------------------------------------------------
+--- Userscript support for luakit.
+--
+-- Evaluates and manages userscripts.
+-- JavaScript userscripts must end in <code>.user.js</code>
+--
+-- # Files and Directories
+--
+-- - Userscript files should be placed in the `scripts` sub-directory of the
+--   luakit data directory, and must have a filename ending in `.user.js`.
+--
+-- @module userscripts
+-- @copyright 2011 Constantin Schomburg <me@xconstruct.net>
+-- @copyright 2010 Fabian Streitel <karottenreibe@gmail.com>
+-- @copyright 2010 Mason Larobina  <mason.larobina@gmail.com>
 
--- Grab environment we need
-local io = io
-local ipairs = ipairs
-local os = os
-local pairs = pairs
-local setmetatable = setmetatable
-local string = string
-local table = table
-local warn = warn
-local webview = webview
-local bind = require("lousy.bind")
+local webview = require("webview")
+local window = require("window")
 local util = require("lousy.util")
 local lfs = require("lfs")
-local add_binds, add_cmds = add_binds, add_cmds
-local new_mode, menu_binds = new_mode, menu_binds
-local capi = { luakit = luakit }
+local new_mode = require("modes").new_mode
+local binds, modes = require("binds"), require("modes")
+local add_binds, add_cmds = modes.add_binds, modes.add_cmds
+local menu_binds = binds.menu_binds
 
---- Evaluates and manages userscripts.
--- JavaScript userscripts must end in <code>.user.js</code>
-module("userscripts")
+local _M = {}
 
 -- Pure JavaScript implementation of greasemonkey methods commonly used
 -- in chome/firefox userscripts.
@@ -115,7 +113,8 @@ local gm_functions = [=[
       var oStyle = document.createElement("style");
       oStyle.setAttribute("type", "text\/css");
       oStyle.appendChild(document.createTextNode(styles));
-      document.getElementsByTagName("head")[0].appendChild(oStyle);
+      var parent = document.getElementsByTagName("head")[0] || document.getElementsByTagName("body")[0];
+      parent.appendChild(oStyle);
     }
   }
 
@@ -135,9 +134,11 @@ local scripts = {}
 --- Stores information on the currently loaded scripts on a webview widget
 local lstate = setmetatable({}, { __mode = "k" })
 
---- The directory, in which to search for userscripts.
--- By default, this is $XDG_DATA_HOME/luakit/scripts
-dir = capi.luakit.data_dir .. "/scripts"
+--- The directory in which to search for userscripts.
+-- By default, this is the `scripts` directory in the luakit data directory.
+-- @type string
+-- @readonly
+_M.dir = luakit.data_dir .. "/scripts"
 
 -- Userscript class methods
 local prototype = {
@@ -148,7 +149,15 @@ local prototype = {
             view:eval_js(gm_functions, { no_return = true })
             lstate[view].gmloaded = true
         end
-        view:eval_js(s.js, { source = s.file, no_return = true })
+        view:eval_js(s.js, { source = s.file, no_return = true, callback =
+        function (_, err)
+            for _, w in pairs(window.bywidget) do
+                if w.view == view then
+                    w:error(string.format("running userscript '%s' failed:\n%s",
+                    s.file, err))
+                end
+            end
+        end})
         lstate[view].loaded[s.file] = s
     end,
     -- Check if the given uri matches the userscripts include/exclude patterns
@@ -178,7 +187,7 @@ end
 
 local function parse_header(header, file)
     local ret = { file = file, include = {}, exclude = {} }
-    for i, line in ipairs(util.string.split(header, "\n")) do
+    for _, line in ipairs(util.string.split(header, "\n")) do
         local singles = { name = true, description = true,
             version = true, homepage = true }
         -- Parse `// @key value` lines in header.
@@ -213,18 +222,28 @@ local function load_js(file)
         script.file = file
         scripts[file] = setmetatable(script, { __index = prototype })
     else
-        warn("(userscripts.lua): Invalid userscript header in file: %s", file)
+        msg.warn("invalid userscript header in file: %s", file)
     end
 end
 
---- Loads all userscripts from the <code>userscripts.dir</code>.
+--- Loads all userscripts from the <code>_M.dir</code>.
 local function load_all()
-    if not os.exists(dir) then return end
-    for file in lfs.dir(dir) do
+    if not os.exists(_M.dir) then return end
+    for file in lfs.dir(_M.dir) do
         if string.match(file, "%.user%.js$") then
-            load_js(dir .. "/" .. file)
+            load_js(_M.dir .. "/" .. file)
         end
     end
+end
+
+local function view_has_userscripts(view)
+    local uri = view.uri or "about:blank"
+    for _, script in pairs(scripts) do
+        if script:match(uri) then
+            return true
+        end
+    end
+    return false
 end
 
 -- Invoke all userscripts for a given webviews current uri
@@ -239,56 +258,71 @@ local function invoke(view, on_start)
     end
 end
 
--- Saves an userscript
-function save(file, js)
-    if not os.exists(dir) then
-        util.mkdir(dir)
+--- Save a userscript to a file.
+-- @tparam string file The file path in which to save the userscript.
+-- @tparam string js The userscript contents.
+function _M.save(file, js)
+    if not os.exists(_M.dir) then
+        util.mkdir(_M.dir)
     end
-    local f = io.open(dir .. "/" .. file, "w")
+    local f = io.open(_M.dir .. "/" .. file, "w")
     f:write(js)
     f:close()
-    load_js(dir .. "/" .. file)
+    load_js(_M.dir .. "/" .. file)
 end
 
--- Deletes an userscript
-function del(file)
+--- Delete a userscript file.
+-- @tparam string file The file path of the userscript to remove.
+function _M.del(file)
     if not scripts[file] then return end
     os.remove(file)
     scripts[file] = nil
 end
 
---- Hook on the webview's load-status signal to invoke the userscripts.
-webview.init_funcs.userscripts = function (view, w)
+-- Hook on the webview's load-status signal to invoke the userscripts.
+webview.add_signal("init", function (view)
     view:add_signal("load-status", function (v, status)
         if status == "provisional" then
             -- Clear last userscript-loaded state
             lstate[v] = { loaded = {}, gmloaded = false }
-        elseif status == "first-visual" then
-            invoke(v, true)
+-- TODO
+--        elseif status == "first-visual" then
+--            invoke(v, true)
         elseif status == "finished" then
+            if view_has_userscripts(view) then
+                if v:emit_signal("enable-userscripts") == false then
+                    return
+                end
+            end
+            -- WebKit2 has no first-visual signal, so we can't inject
+            -- userscripts set to run at document start that way. Just
+            -- inject them all when loading has finished for now.
+            invoke(v, true)
             invoke(v)
         end
     end)
-end
+end)
 
 -- Add userscript commands
-local cmd = bind.cmd
 add_cmds({
     -- Saves the content of the open view as an userscript
-    cmd({"userscriptinstall", "usi", "usinstall"}, "install userscript", function (w, a)
+    { ":userscriptinstall, :usi, :usinstall", "Install the userscript loaded in the current tab.", function (w)
         local view = w.view
         local file = string.match(view.uri, "/([^/]+%.user%.js)$")
         if (not file) then return w:error("URL is not a *.user.js file") end
         if view:loading() then w:error("Wait for script to finish loading first.") end
-        local js = util.unescape(view:eval_js("document.body.getElementsByTagName('pre')[0].innerHTML"))
-        local header = string.match(js, "//%s*==UserScript==%s*\n(.*)\n//%s*==/UserScript==")
-        if not header then return w:error("Could not find userscript header") end
-        save(file, js)
-        w:notify("Installed userscript to: " .. dir .. "/" .. file)
-    end),
+        local js = "document.body.getElementsByTagName('pre')[0].innerHTML"
+        view:eval_js(js, { callback = function(ret)
+            local script = util.unescape(ret)
+            local header = string.match(script, "//%s*==UserScript==%s*\n(.*)\n//%s*==/UserScript==")
+            if not header then return w:error("Could not find userscript header") end
+            _M.save(file, script)
+            w:notify("Installed userscript to: " .. _M.dir .. "/" .. file)
+        end})
+    end },
 
-    cmd({"userscripts", "uscripts"}, "list userscripts",
-        function (w) w:set_mode("uscriptlist") end),
+    { ":userscripts, :uscripts", "List installed userscripts.",
+        function (w) w:set_mode("uscriptlist") end },
 })
 
 -- Add mode to display all userscripts in menu
@@ -302,11 +336,12 @@ new_mode("uscriptlist", {
         end
         if #rows == 1 then
             w:notify(string.format("No userscripts installed. Use `:usinstall`"
-                .. "or place .user.js files in %q manually.", dir))
+                .. "or place .user.js files in %q manually.", _M.dir))
             return
         end
         w.menu:build(rows)
-        w:notify("Use j/k to move, d delete, o visit website, t tabopen, w winopen. '*' indicates active scripts.", false)
+        w:notify("Use j/k to move, d delete, o visit website, t tabopen, w winopen. '*' indicates active scripts.",
+            false)
     end,
 
     leave = function (w)
@@ -314,47 +349,48 @@ new_mode("uscriptlist", {
     end,
 })
 
-local key = bind.key
 add_binds("uscriptlist", util.table.join({
     -- Delete userscript
-    key({}, "d", function (w)
-        local row = w.menu:get()
-        if row and row.script then
-            del(row.script.file)
-            w.menu:del()
-        end
-    end),
+    { "d", "Delete the currently highlighted userscript.",
+        function (w)
+            local row = w.menu:get()
+            if row and row.script then
+                _M.del(row.script.file)
+                w.menu:del()
+            end
+        end },
 
     -- Open userscript homepage
-    key({}, "o", function (w)
-        local row = w.menu:get()
-        if row and row.script and row.script.homepage then
-            w:navigate(row.script.homepage)
-        end
-    end),
+    { "o", "Open the currently highlighted userscript's homepage in the current tab.",
+        function (w)
+            local row = w.menu:get()
+            if row and row.script and row.script.homepage then
+                w:navigate(row.script.homepage)
+            end
+        end },
 
     -- Open userscript homepage in new tab
-    key({}, "t", function (w)
-        local row = w.menu:get()
-        if row and row.script and row.script.homepage then
-            w:new_tab(row.script.homepage, false)
-        end
-    end),
+    { "t", "Open the currently highlighted userscript's homepage in a new tab.",
+        function (w)
+            local row = w.menu:get()
+            if row and row.script and row.script.homepage then
+                w:new_tab(row.script.homepage, { switch = false })
+            end
+        end },
 
     -- Open userscript homepage in new window
-    key({}, "w", function (w)
-        local row = w.menu:get()
-        if row and row.script and row.script.homepage then
-            window.new(row.script.homepage)
-        end
-    end),
-
-    -- Close menu
-    key({}, "q", function (w) w:set_mode() end),
-
+    { "w", "Open the currently highlighted userscript's homepage in a new window.",
+        function (w)
+            local row = w.menu:get()
+            if row and row.script and row.script.homepage then
+                window.new(row.script.homepage)
+            end
+        end },
 }, menu_binds))
 
 -- Initialize the userscripts
 load_all()
+
+return _M
 
 -- vim: et:sw=4:ts=8:sts=4:tw=80
